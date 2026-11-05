@@ -433,7 +433,7 @@ const rampTex = canvasTex(256, 256, (g, w, h) => {
   for (let i = 0; i < 8; i++) { g.fillStyle = i % 2 ? '#111' : '#fff'; g.fillRect(w - 14, i * 32, 14, 32); }
 });
 const ramps = [];
-for (const ax of ARCH_X) {
+for (const ax of ARCH_X.slice(0, 1)) { // one jump per loop
   const g = new THREE.Group(), W = 4.2;
   profile([[0, 0], [RAMP_L, RAMP_H], [RAMP_L, 0]], W, flat(0x7a3cff), g);
   const geo = new THREE.PlaneGeometry(Math.hypot(RAMP_L, RAMP_H), W); geo.rotateX(-Math.PI / 2);
@@ -786,11 +786,11 @@ function audio() {
   }
   if (actx.state === 'suspended') actx.resume();
 }
-function noise(t, dur, freq, vol, type = 'bandpass', q = 1) {
+function noise(t, dur, freq, vol, type = 'bandpass', q = 1, dest = sfx) {
   const s = actx.createBufferSource(); s.buffer = noiseBuf;
   const f = actx.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q;
   const g = actx.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  s.connect(f).connect(g).connect(sfx); s.start(t, Math.random()); s.stop(t + dur);
+  s.connect(f).connect(g).connect(dest); s.start(t, Math.random()); s.stop(t + dur);
 }
 function sfxBoom(vol = 0.5) {
   if (!actx) return;
@@ -813,13 +813,52 @@ function sfxRoar(dur = 2.6) {
   }
   noise(t, 0.9, 1400, 0.18, 'bandpass', 0.7);
 }
-function sfxThump() {
+// synthesized crowd cheer: a swelling crowd bed, "woo!" voices, claps and a whistle
+function sfxCheer(vol = 1, dur = 3.2) {
   if (!actx) return;
-  const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
-  o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(38, t + 0.35);
-  g.gain.setValueAtTime(0.7, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
-  o.connect(g).connect(sfx); o.start(t); o.stop(t + 0.45);
-  noise(t, 0.35, 500, 0.4, 'lowpass');
+  const t0 = actx.currentTime + 0.02;
+  const out = actx.createGain(); out.gain.value = vol; out.connect(sfx);
+  for (let i = 0; i < 7; i++) { // crowd bed: filtered noise sections, each fluttering at its own rate
+    const s = actx.createBufferSource(); s.buffer = noiseBuf; s.loop = true;
+    const f = actx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = rand(450, 2600); f.Q.value = rand(0.8, 2);
+    const am = actx.createGain(); am.gain.value = 0.7;
+    const lfo = actx.createOscillator(), lg = actx.createGain(); lfo.frequency.value = rand(3, 9); lg.gain.value = 0.3;
+    lfo.connect(lg).connect(am.gain);
+    const g = actx.createGain(), peak = rand(0.1, 0.18);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak, t0 + rand(0.15, 0.4));
+    g.gain.setValueAtTime(peak, t0 + dur * 0.35);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    s.connect(f).connect(am).connect(g).connect(out);
+    s.start(t0, rand(0, 1.5)); s.stop(t0 + dur); lfo.start(t0); lfo.stop(t0 + dur);
+  }
+  const vowels = [[700, 1150], [800, 1250], [350, 900], [550, 1700]]; // ah, ah, oo, eh
+  for (let i = 0; i < 12; i++) { // individual "woo!" / "yeah!" shouts
+    const st = t0 + rand(0, 0.5), len = rand(0.7, 1.8), f0 = Math.random() < 0.5 ? rand(150, 260) : rand(260, 420);
+    const o = actx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(f0 * 0.85, st); o.frequency.exponentialRampToValueAtTime(f0 * 1.25, st + 0.25); o.frequency.exponentialRampToValueAtTime(f0 * 0.9, st + len);
+    const vib = actx.createOscillator(), vg = actx.createGain(); vib.frequency.value = rand(5, 7); vg.gain.value = f0 * 0.03;
+    vib.connect(vg).connect(o.frequency);
+    const g = actx.createGain(), lv = rand(0.08, 0.16);
+    g.gain.setValueAtTime(0.0001, st); g.gain.exponentialRampToValueAtTime(lv, st + 0.08);
+    g.gain.setValueAtTime(lv, st + len * 0.5); g.gain.exponentialRampToValueAtTime(0.0001, st + len);
+    const [F1, F2] = pick(vowels);
+    for (const [F, q, a] of [[F1, 6, 1], [F2, 8, 0.6]]) {
+      const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = F * rand(0.9, 1.1); bp.Q.value = q;
+      const ga = actx.createGain(); ga.gain.value = a;
+      o.connect(bp).connect(ga).connect(g);
+    }
+    g.connect(out);
+    o.start(st); o.stop(st + len + 0.05); vib.start(st); vib.stop(st + len + 0.05);
+  }
+  for (let i = 0; i < 45; i++) // claps
+    noise(t0 + 0.1 + Math.pow(Math.random(), 1.6) * (dur - 0.6), 0.03, rand(1200, 2200), rand(0.15, 0.35), 'bandpass', 1.2, out);
+  { // a two-tone whistle
+    const wt = t0 + rand(0.3, 0.8), o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.setValueAtTime(2000, wt); o.frequency.exponentialRampToValueAtTime(2800, wt + 0.18); o.frequency.exponentialRampToValueAtTime(2200, wt + 0.6);
+    g.gain.setValueAtTime(0.0001, wt); g.gain.exponentialRampToValueAtTime(0.06, wt + 0.04); g.gain.setValueAtTime(0.06, wt + 0.45); g.gain.exponentialRampToValueAtTime(0.0001, wt + 0.65);
+    o.connect(g).connect(out); o.start(wt); o.stop(wt + 0.7);
+  }
 }
 
 // the birthday tune
@@ -928,7 +967,7 @@ const LAND_LINES = ['HAPPY BIRTHDAY ASAD!', '+1 YEAR UNLOCKED!', 'NAILED IT, ASA
 const TRICKS = ['BACKFLIP!', 'BARREL ROLL!'];
 const jump = { state: 'ground', y: 0, vy: 0, t: 0, dur: 1, p: 0, trick: 0, count: 0, landCount: 0, sinceLand: 99 };
 const rampH = u => u < 0 ? 0 : RAMP_H * Math.min(u, RAMP_L) / RAMP_L;
-let dist = 0, time = 0, speed = BASE_SPEED, ts = 1, turboAmt = 0, autoTurbo = false;
+let dist = 90, time = 0, speed = BASE_SPEED, ts = 1, turboAmt = 0, autoTurbo = false;
 let weaveT = 0, aS = 1, zPrev = 0, squash = 0, shake = 0, landIdx = 0;
 const wheelie = { on: false, t: 0, cool: 6 };
 const clock = new THREE.Clock();
@@ -947,7 +986,7 @@ function land() {
     colors: BALLOON_COLORS.map(c => new THREE.Color(c).multiplyScalar(1.6)) });
   shock.position.set(0, 0.04, bikeRoot.position.z); shock.userData.t = 0;
   popup(LAND_LINES[landIdx++ % LAND_LINES.length], 'pink');
-  sfxThump();
+  sfxCheer(1);
   for (let k = 0; k < 3; k++) setTimeout(() => launchRocket(), 200 + k * 250);
 }
 
@@ -961,9 +1000,7 @@ function tick() {
 
   // speed: auto turbo into the ramps, plus the TURBO button
   userTurbo -= realDt;
-  const wasAuto = autoTurbo;
   autoTurbo = jump.state === 'air' || jump.sinceLand < 0.8 || ramps.some(r => r.position.x > 0 && r.position.x < 42);
-  if (autoTurbo && !wasAuto && userTurbo <= 0) sfxRoar(2.8);
   const target = (autoTurbo || userTurbo > 0) ? TURBO_SPEED : BASE_SPEED;
   speed += (target - speed) * Math.min(1, dt * 1.6);
   turboAmt = clamp((speed - BASE_SPEED) / (TURBO_SPEED - BASE_SPEED), 0, 1);
@@ -1020,7 +1057,7 @@ function tick() {
 
   // wheelies on the straights
   wheelie.cool += dt;
-  if (!wheelie.on && wheelie.cool > 5 && jump.state === 'ground' && aS > 0.9 && turboAmt < 0.2) { wheelie.on = true; wheelie.t = 0; popup('WHEELIE!'); }
+  if (!wheelie.on && wheelie.cool > 14 && jump.state === 'ground' && aS > 0.9 && turboAmt < 0.2) { wheelie.on = true; wheelie.t = 0; popup('WHEELIE!'); sfxCheer(0.45, 2.4); }
   let wp = 0;
   if (wheelie.on) { wheelie.t += dt; wp = Math.pow(Math.sin(Math.min(wheelie.t / 3, 1) * Math.PI), 0.6); if (wheelie.t > 3) { wheelie.on = false; wheelie.cool = 0; } }
   pitchPivot.rotation.z = jump.state === 'air' ? airPitch : Math.max(0.33 * wp, rampPitch);
